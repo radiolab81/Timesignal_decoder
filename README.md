@@ -1,5 +1,7 @@
 # DCF77/MSF/JJY-Empfänger über Soundkarte (Debian 13)
 
+![main](https://github.com/radiolab81/Timesignal_receiver/blob/main/images/timesignal_stations_map.svg)
+
 Empfängt Langwellen-Zeitzeichensender (DCF77 auf 77,5 kHz, MSF auf 60 kHz,
 JJY auf 40/60 kHz) indirekt über den NF-Ausgang eines Kommunikationsempfängers
 (CW/SSB-Modus) via Soundkarte und dekodiert das Telegramm streng nach dem
