@@ -1,4 +1,4 @@
-# DCF77/MSF/JJY-Empfänger über Soundkarte (Debian 13)
+# DCF77/MSF/JJY-Dekoder über Soundkarte (Debian 13)
 
 ![main](https://github.com/radiolab81/Timesignal_receiver/blob/main/images/timesignal_stations_map.svg)
 
