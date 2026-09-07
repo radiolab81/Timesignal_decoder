@@ -51,9 +51,11 @@ struct DecodedTime {
     bool     dstChangeAnnounced = false;     // MSF Bit 53B: Sommerzeitwechsel in <=61 Minuten
     int      dut1DeciSeconds = 0;            // MSF: UT1-UTC in 0.1s-Schritten (0 falls nicht zutreffend/DCF77)
     int      dayOfYear = -1;                 // JJY: Tag des Jahres (1-366), -1 falls nicht ermittelt/protokolliert
-    bool     leapSecondIsRemoval = false;     // JJY: bei leapSecondAnnounced=true - true=Sekunde wird ENTFERNT statt eingefuegt
+    bool     leapSecondIsRemoval = false;     // JJY/PL225: bei leapSecondAnnounced=true - true=Sekunde wird ENTFERNT statt eingefuegt
+    int      tzOffsetHours = 0;               // PL225: Zeitzonen-Offset des Senderstandorts zu UTC in Stunden (0-3)
+    std::string transmitterStateText;         // PL225: Klartext-Status des Senders (Normalbetrieb/Wartung angekuendigt)
 
-    std::string sourceTag; // z.B. "DCF77", "MSF", "JJY"
+    std::string sourceTag; // z.B. "DCF77", "MSF", "JJY", "PL225"
 };
 
 // Callback-Interface, über das der Decoder fertige Minuten/Fehler meldet.
