@@ -1,18 +1,25 @@
-# DCF77/MSF/JJY-Dekoder über Soundkarte (Debian 13)
+# DCF77/MSF/JJY/PL225-Empfänger über Soundkarte (Debian 13)
 
 ![main](https://github.com/radiolab81/Timesignal_receiver/blob/main/images/timesignal_stations_map.svg)
 
-Empfängt Langwellen-Zeitzeichensender (DCF77 auf 77,5 kHz, MSF auf 60 kHz,
-JJY auf 40/60 kHz) indirekt über den NF-Ausgang eines Kommunikationsempfängers
-(CW/SSB-Modus) via Soundkarte und dekodiert das Telegramm streng nach dem
-jeweiligen Protokoll (Paritätsprüfung, Rahmen-Erkennungsmuster,
-Plausibilitätsprüfung aller Felder). Das Protokoll wird per
-`--protocol dcf77|msf|jjy` gewählt.
+Empfängt Langwellen-/Mittelwellen-Zeitzeichensender (DCF77 auf 77,5 kHz, MSF
+auf 60 kHz, JJY auf 40/60 kHz, PL225/e-CzasPL auf 225 kHz) indirekt über den
+NF-Ausgang eines Kommunikationsempfängers (CW/SSB-Modus) via Soundkarte und
+dekodiert das Telegramm streng nach dem jeweiligen Protokoll (Paritätsprüfung,
+Rahmen-Erkennungsmuster, Reed-Solomon/CRC-Fehlerkorrektur, Plausibilitäts-
+prüfung aller Felder). Das Protokoll wird per `--protocol dcf77|msf|jjy|pl225`
+gewählt.
+
+
 
 ## Architektur (modular, für weitere Sender vorbereitet)
 
+DCF77/MSF/JJY sind Amplitudentastungs-Verfahren und teilen sich einen
+gemeinsamen Signalpfad; PL225 ist reine Phasenmodulation und braucht daher
+einen eigenen, parallelen Pfad (siehe unten).
+
 ```
-ALSA-Soundkarte
+ALSA-Soundkarte / WAV-Datei
    │
    ├─► SpectrumAnalyzer      (FFT, ASCII-Anzeige zur Feinabstimmung des Receivers)
    │
@@ -24,6 +31,18 @@ ALSA-Soundkarte
                  └─► JjyDecoder    (implementiert)
                         │
                         └─► IDecodedTimeSink → ConsoleTimeSink (Ausgabe)
+
+ALSA-Soundkarte (mono, SSB/BFO) / Mono-WAV-Datei
+   │
+   └─► MonoToIqDownconverter (feste NCO + Tiefpass -> komplexer Strom)
+          │
+IQ-WAV-Datei (echtes I/Q) ─────────────────────┐
+          │                                     │
+          └─────────────► Pl225Decoder ◄────────┘
+                 (eigene PLL/Costas-Loop-Phasennachfuehrung,
+                  Sync, Reed-Solomon, CRC8, Descrambling)
+                        │
+                        └─► IDecodedTimeSink → ConsoleTimeSink (Ausgabe, gemeinsam genutzt)
 ```
 
 Alle Dateien sind einzeln kommentiert:
@@ -37,11 +56,18 @@ Alle Dateien sind einzeln kommentiert:
 | `include/dcf77_decoder.hpp/.cpp` | DCF77-spezifische Protokollauswertung (BCD, gerade Parität) |
 | `include/msf_decoder.hpp/.cpp` | MSF-spezifische Protokollauswertung (BCD, ungerade Parität, Doppelpuls-Bits) |
 | `include/jjy_decoder.hpp/.cpp` | JJY-spezifische Protokollauswertung (BCD, Tag-des-Jahres→Datum, zwei-Marker-Sync) |
-| `include/wav_audio_source.hpp/.cpp` | WAV-Datei als Alternative zur Soundkarte (gleicher Callback-Typ wie ALSA) |
-| `include/audio_block_callback.hpp` | Gemeinsamer Callback-Typ für ALSA- und WAV-Quelle (abhängigkeitsfrei) |
+| `include/pl225_decoder.hpp/.cpp` | PL225/e-CzasPL: Phasennachführung (PLL/Costas-Loop), Sync, Reed-Solomon, CRC8, Descrambling |
+| `include/mono_to_iq_downconverter.hpp` | SSB/BFO-Mono-Signal → komplexer Strom (fester Mischer + Tiefpass) |
+| `include/crc8.hpp` | Generische CRC8-Implementierung (für PL225) |
+| `include/reed_solomon_gf16.hpp` | Eigene RS(15,9) GF(16)-Implementierung (Berlekamp-Massey, freie Lizenz) |
+| `include/wav_audio_source.hpp/.cpp` | Mono-WAV-Datei als Alternative zur Soundkarte |
+| `include/iq_wav_audio_source.hpp/.cpp` | Stereo-WAV-Datei als IQ-Quelle (I=links, Q=rechts) |
+| `include/audio_block_callback.hpp` / `iq_block_callback.hpp` | Gemeinsame, abhängigkeitsfreie Callback-Typen |
 | `test/test_msf_synthetic.cpp` | Offline-Test der MSF-Zustandsmaschine mit synthetischem Minutenrahmen |
 | `test/test_jjy_synthetic.cpp` | Offline-Test der JJY-Zustandsmaschine (Normalfall + Morseblock-Sonderfall) |
-| `src/main.cpp` | Verdrahtung aller Module, CLI (`--protocol dcf77\|msf\|jjy`) |
+| `test/test_pl225_synthetic.cpp` | Offline-Test des PL225-Decoders mit echt RS/CRC-kodiertem Testrahmen |
+| `test/test_reed_solomon.cpp` | Isolierter Test der eigenen RS(15,9) GF(16)-Implementierung (0-4 Fehler) |
+| `src/main.cpp` | Verdrahtung aller Module, CLI (`--protocol dcf77\|msf\|jjy\|pl225`) |
 
 **Wichtig zum `CarrierDipEvent`:** Der `ToneEnvelopeDetector` meldet jede
 einzelne Trägerabsenkung ("Dip") roh an den Decoder (Start-/Endzeit,
@@ -104,34 +130,48 @@ falls die Karte 48 kHz nicht nativ unterstützt).
 
 # Aus einer WAV-Datei statt der Soundkarte (z.B. aufgezeichnete Empfangssitzung)
 ./Timesignal_receiver --wav-file aufnahme.wav --tone 500 --protocol jjy
+
+# PL225 (Polen, 225 kHz) - SSB/USB-Empfang mit BFO, Soundkarte oder Mono-WAV
+./Timesignal_receiver --device plughw:1,0 --tone 1000 --protocol pl225
+./Timesignal_receiver --wav-file 225khz_ssb.wav --tone 1000 --protocol pl225
+
+# PL225 aus einer echten IQ-Aufnahme (stereo WAV, I=links/Q=rechts)
+./Timesignal_receiver --iq-wav-file 225khz_iq.wav --protocol pl225
 ```
 
 - `--device` : ALSA-Gerät (siehe oben)
-- `--wav-file` : liest eine WAV-Datei (PCM, 16 Bit, mono oder stereo) statt
-  der Soundkarte ein. Überschreibt `--device` und `--rate` - die
-  Abtastrate wird aus der Datei übernommen. Nützlich zum Debuggen/erneuten
-  Auswerten aufgezeichneter Empfangssitzungen, ohne den Empfänger laufen
-  lassen zu müssen
-- `--tone`   : Zielton in Hz, auf den der Empfänger-NF-Ausgang gemischt wird
-- `--protocol` : `dcf77` (Default), `msf` oder `jjy`
+- `--wav-file` : liest eine (Mono- oder Stereo-)WAV-Datei statt der Soundkarte
+  ein. Überschreibt `--device` und `--rate` - die Abtastrate wird aus der
+  Datei übernommen. Nützlich zum Debuggen/erneuten Auswerten aufgezeichneter
+  Empfangssitzungen, ohne den Empfänger laufen lassen zu müssen
+- `--iq-wav-file` : nur `--protocol pl225` - stereo WAV-Datei mit echtem
+  IQ-Signal (I=linker Kanal, Q=rechter Kanal), z.B. aus SDR#, GQRX oder
+  GNU Radio. Überschreibt `--wav-file`/`--device`
+- `--tone`   : Zielton/BFO-Frequenz in Hz, auf die der Empfänger-NF-Ausgang
+  gemischt wird
+- `--protocol` : `dcf77` (Default), `msf`, `jjy` oder `pl225`
 - `--spectrum` : zeigt alle paar Sekunden (Audiozeit) eine ASCII-Balkenanzeige
   des Spektrums um den Zielton, damit man den Communication-Receiver exakt
   darauf feinabstimmen kann (Peak muss auf dem `--tone`-Wert liegen); bei
-  `--wav-file` läuft das einfach so schnell durch, wie die Datei verarbeitet wird
-- `--verbose-bits` : gibt jedes dekodierte Rohbit einzeln aus (Debugging)
+  `--wav-file` läuft das einfach so schnell durch, wie die Datei verarbeitet
+  wird. Nicht verfügbar/nicht nötig bei `--protocol pl225`
+- `--verbose-bits` : gibt jedes dekodierte Rohbit einzeln aus (Debugging;
+  bei PL225 ohne Wirkung)
 
 ## Empfänger-Einstellung
 
 1. Communication-Receiver auf **77,500 kHz** (DCF77), **60,000 kHz**
-   (MSF) bzw. **40,000 kHz oder 60,000 kHz** (JJY - beide senden
-   denselben Zeitcode), Betriebsart **CW oder SSB**.
-2. `--spectrum` einschalten und die Feinabstimmung (RIT/Clarifier oder
-   VFO) so justieren, dass der Peak im Terminal exakt bei der mit
-   `--tone` gewählten Frequenz liegt (z. B. 1000 Hz).
+   (MSF), **40,000 kHz oder 60,000 kHz** (JJY - beide senden denselben
+   Zeitcode) bzw. **225,000 kHz im USB-Modus** (PL225 - siehe unten,
+   **nicht** AM-Modus verwenden!), Betriebsart **CW oder SSB**.
+2. `--spectrum` einschalten (nicht bei PL225) und die Feinabstimmung
+   (RIT/Clarifier oder VFO) so justieren, dass der Peak im Terminal exakt
+   bei der mit `--tone` gewählten Frequenz liegt (z. B. 1000 Hz).
 3. Sobald der Pegelkontrast zwischen "Träger an" und "Träger abgesenkt"
    ausreichend groß ist, beginnt der `ToneEnvelopeDetector` automatisch
    mit der Dip-Erkennung; nach der ersten erkannten Minutenmarke
-   synchronisiert sich der jeweilige Decoder.
+   synchronisiert sich der jeweilige Decoder. (Bei PL225 übernimmt das
+   die eingebaute PLL/Costas-Loop automatisch, siehe unten.)
 
 ## Protokolltreue
 
@@ -200,6 +240,31 @@ Jede Verletzung führt zum Verwerfen des betroffenen Telegramms samt
 Fehlermeldung auf stderr — es werden nie unvalidierte Zeitwerte
 ausgegeben.
 
+### PL225 (e-CzasPL, Polen)
+
+Der `Pl225Decoder` prüft **strikt**:
+
+- Sync-Wort 0x5555 (16 Bit alternierend), Header-Byte 0x60, Nachrichten-
+  präfix 0b101 - alles andere (z.B. die "ENEA"-Lichtsteuerungsnachrichten,
+  die denselben Kanal mitnutzen) wird sauber verworfen, nicht fehlinterpretiert
+- Reed-Solomon(15,9)-Fehlerkorrektur über GF(16) (bis zu 3 korrigierbare
+  4-Bit-Symbole) für das 37-Bit-Datenfeld
+- CRC8 (Polynom 0x07) über die **verschlüsselten** ("gescrambelten") Bytes
+  3-7 (nicht über die entschlüsselten Werte - eine von SP6HFE dokumentierte
+  Besonderheit) inkl. Korrektur des einzigen nicht RS-geschützten Bits (SK1)
+- adaptiver Schwellenwert (Minimum/Maximum je Rahmen-Kandidat) statt eines
+  festen 22,5°-Schwellenwerts, da der tatsächlich erreichte Phasenhub nach
+  Tiefpassfilterung nicht immer exakt 45° beträgt
+
+Ausgegeben werden u.a. Zeitzonen-Offset (0/+1/+2/+3h, inkl. der von PA3FWM
+dokumentierten "vertauschten" Bit-Zuordnung), Schaltsekunden-Ankündigung
+(inkl. Vorzeichen: Einfügen/Entfernen) und Sender-Wartungsstatus.
+
+**Bekannte Einschränkung:** Der genaue Zeitpunkt, auf den sich ein Frame
+bezieht, ist laut PA3FWM selbst senderseitig mit 100-200ms Jitter behaftet
+- für eine Wanduhr unproblematisch, für einen NTP-Server nicht geeignet.
+
+
 ## Behobener Fehler: JJY-Paritätsfehler an Bit 35 (Off-by-one)
 
 Frühere Versionen dieses Decoders platzierten PA1 (Stunden-Parität) auf
@@ -236,14 +301,16 @@ erwarteten Ausgabewerte prüfen:
 
 ```bash
 cd build
-make test_msf_synthetic test_jjy_synthetic
+make test_msf_synthetic test_jjy_synthetic test_pl225_synthetic
 ./test_msf_synthetic
 ./test_jjy_synthetic
+./test_pl225_synthetic
 # oder alle zusammen:
 ctest
 ```
 
-Erwartete Ausgabe jeweils: `TEST(FALL) OK: ...` / `Alle JJY-Tests erfolgreich.`
+Erwartete Ausgabe jeweils: `TEST(FALL) OK: ...` / `Alle JJY-Tests erfolgreich.` /
+`TEST OK: alle Felder stimmen mit den Erwartungswerten überein.` (PL225)
 
 ## Erweiterung um weitere Sender (z.B. WWVB/USA, BPC/China)
 
@@ -261,6 +328,11 @@ Erwartete Ausgabe jeweils: `TEST(FALL) OK: ...` / `Alle JJY-Tests erfolgreich.`
 
 Der Audio-/Spektrum-/Envelope-Pfad muss dafür **nicht** verändert werden -
 er liefert bereits protokollneutrale `CarrierDipEvent`s.
+
+Für Phasen-/IQ-basierte Verfahren (analog zu PL225) orientiert man sich
+stattdessen an `pl225_decoder.hpp`/`mono_to_iq_downconverter.hpp` und
+verdrahtet in `main.cpp` analog zu `runPl225(...)` einen eigenen,
+parallelen Pfad.
 
 ## Bekannte Einschränkungen
 
@@ -280,6 +352,16 @@ er liefert bereits protokollneutrale `CarrierDipEvent`s.
   (siehe Kommentar in `jjy_decoder.hpp`/`dayOfYearToMonthDay`). Der
   ST1-ST6-Wartungsankündigungsblock (nur relevant in Minute 15/45) wird
   nicht dekodiert.
+- **PL225:** Schaltsekunden werden nicht durch eigene Kalenderlogik
+  behandelt (der gesendete Zeitstempel schließt sie laut PA3FWM ohnehin
+  aus). Das zweistellige Jahr wird immer als 20xx interpretiert. Der
+  `MonoToIqDownconverter` nutzt eine FESTE NCO-Frequenz (`--tone`); liegt
+  die tatsächliche BFO-Abweichung außerhalb weniger Hz, kann die PLL den
+  Einrastbereich verfehlen - in diesem Fall `--tone` genauer an die am
+  Empfänger tatsächlich eingestellte BFO-Frequenz anpassen. Live-IQ-Empfang
+  direkt von der Soundkarte (stereo, z.B. bei Direktabtast-SDRs) ist noch
+  nicht implementiert, nur IQ-WAV-Dateien (`--iq-wav-file`) - für Live-Betrieb
+  daher aktuell der SSB/Mono-Pfad empfohlen.
 - Die adaptive Schwelle im `ToneEnvelopeDetector` geht von einem relativ
   sauberen NF-Signal aus; bei starkem Rauschen empfiehlt sich ein
   schmalbandiges Empfänger-Filter (CW-Filter, wenige hundert Hz).
