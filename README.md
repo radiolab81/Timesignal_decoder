@@ -36,7 +36,7 @@ ALSA-Soundkarte (mono, SSB/BFO) / Mono-WAV-Datei
    │
    └─► MonoToIqDownconverter (feste NCO + Tiefpass -> komplexer Strom)
           │
-IQ-WAV-Datei (echtes I/Q) ─────────────────────┐
+IQ-WAV-Datei (echtes I/Q) ──────────────────────┐
           │                                     │
           └─────────────► Pl225Decoder ◄────────┘
                  (eigene PLL/Costas-Loop-Phasennachfuehrung,
