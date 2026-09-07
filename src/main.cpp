@@ -32,6 +32,9 @@
 #include "dcf77_decoder.hpp"
 #include "msf_decoder.hpp"
 #include "jjy_decoder.hpp"
+#include "pl225_decoder.hpp"
+#include "iq_wav_audio_source.hpp"
+#include "mono_to_iq_downconverter.hpp"
 
 #include <csignal>
 #include <cstdio>
@@ -58,7 +61,8 @@ public:
         static const char* dcf77Days[] = {"", "Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"};
         static const char* sundayFirstDays[] = {"So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"};
         const char* wd = "?";
-        if (t.sourceTag == "DCF77" && t.weekday >= 1 && t.weekday <= 7) wd = dcf77Days[t.weekday];
+        if ((t.sourceTag == "DCF77" || t.sourceTag == "PL225") && t.weekday >= 1 && t.weekday <= 7)
+            wd = dcf77Days[t.weekday];
         else if ((t.sourceTag == "MSF" || t.sourceTag == "JJY") && t.weekday >= 0 && t.weekday <= 6)
             wd = sundayFirstDays[t.weekday];
 
@@ -81,6 +85,10 @@ public:
         if (t.sourceTag == "MSF") {
             std::printf("  DUT1  : %+d ms (UT1-UTC)\n", t.dut1DeciSeconds * 100);
         }
+        if (t.sourceTag == "PL225") {
+            std::printf("  Zeitzone-Offset: +%dh, Sender-Status: %s\n",
+                        t.tzOffsetHours, t.transmitterStateText.c_str());
+        }
     }
 
     void onDecodeError(const std::string& reason) override {
@@ -96,7 +104,7 @@ public:
     bool verboseBits_ = false;
 };
 
-enum class Protocol { Dcf77, Msf, Jjy };
+enum class Protocol { Dcf77, Msf, Jjy, Pl225 };
 
 struct Options {
     std::string device = "default";
@@ -105,7 +113,8 @@ struct Options {
     bool showSpectrum = false;
     bool verboseBits = false;
     Protocol protocol = Protocol::Dcf77;
-    std::string wavFile; // leer = Soundkarte verwenden, sonst Pfad zur WAV-Datei
+    std::string wavFile;   // leer = Soundkarte verwenden, sonst Pfad zur (Mono-)WAV-Datei
+    std::string iqWavFile; // nur PL225: Pfad zu einer stereo IQ-WAV-Datei (I=links,Q=rechts)
 };
 
 void printUsage(const char* prog) {
@@ -115,15 +124,22 @@ void printUsage(const char* prog) {
         "  --wav-file <pfad.wav>     WAV-Datei statt Soundkarte einlesen (PCM, 16 Bit,\n"
         "                            mono oder stereo). Ueberschreibt --device und --rate;\n"
         "                            die Abtastrate wird aus der Datei uebernommen.\n"
+        "  --iq-wav-file <pfad.wav>  Nur --protocol pl225: stereo IQ-WAV-Datei (I=links,\n"
+        "                            Q=rechts) statt SSB/Mono-Empfang verwenden.\n"
         "  --rate <Hz>               Abtastrate bei Soundkarten-Aufnahme (Default: 48000)\n"
-        "  --tone <Hz>               Zieltonfrequenz des Empfaenger-NF-Ausgangs (Default: 1000)\n"
-        "  --protocol <dcf77|msf|jjy> Zeitzeichenprotokoll (Default: dcf77)\n"
-        "                            dcf77 -> Empfaenger auf 77,5 kHz einstellen\n"
-        "                            msf   -> Empfaenger auf 60 kHz einstellen\n"
-        "                            jjy   -> Empfaenger auf 40 kHz oder 60 kHz einstellen\n"
+        "  --tone <Hz>               Zieltonfrequenz/BFO-Frequenz des Empfaenger-NF-Ausgangs\n"
+        "                            (Default: 1000). Bei --protocol pl225 im Mono/SSB-Modus:\n"
+        "                            die BFO-Frequenz, bei der der 225kHz-Traeger im Audio\n"
+        "                            erscheint (siehe Praxis-Hinweis unten).\n"
+        "  --protocol <dcf77|msf|jjy|pl225> Zeitzeichenprotokoll (Default: dcf77)\n"
+        "                            dcf77 -> 77,5 kHz \n"
+        "                            msf   -> 60 kHz \n"
+        "                            jjy   -> 40 kHz oder 60 kHz \n"
+        "                            pl225 -> 225 kHz ,\n"
+        "                                     ODER --iq-wav-file fuer echten IQ-Mitschnitt\n"
         "  --spectrum                Periodische ASCII-Spektrumsanzeige zur Feinabstimmung\n"
         "                            (bei --wav-file: eine einmalige Analyse ueber die\n"
-        "                            gesamte Datei statt einer Live-Anzeige)\n"
+        "                            gesamte Datei statt einer Live-Anzeige; nicht fuer pl225)\n"
         "  --verbose-bits            Jedes einzelne dekodierte Bit ausgeben\n"
         "  --help                    Diese Hilfe anzeigen\n",
         prog);
@@ -146,6 +162,9 @@ bool parseArgs(int argc, char** argv, Options& opt) {
         } else if (arg == "--wav-file") {
             const char* v = needValue("--wav-file"); if (!v) return false;
             opt.wavFile = v;
+        } else if (arg == "--iq-wav-file") {
+            const char* v = needValue("--iq-wav-file"); if (!v) return false;
+            opt.iqWavFile = v;
         } else if (arg == "--rate") {
             const char* v = needValue("--rate"); if (!v) return false;
             opt.sampleRate = static_cast<unsigned>(std::atoi(v));
@@ -158,8 +177,9 @@ bool parseArgs(int argc, char** argv, Options& opt) {
             if (p == "dcf77") opt.protocol = Protocol::Dcf77;
             else if (p == "msf") opt.protocol = Protocol::Msf;
             else if (p == "jjy") opt.protocol = Protocol::Jjy;
+            else if (p == "pl225") opt.protocol = Protocol::Pl225;
             else {
-                std::fprintf(stderr, "Unbekanntes Protokoll: %s (erlaubt: dcf77, msf, jjy)\n", p.c_str());
+                std::fprintf(stderr, "Unbekanntes Protokoll: %s (erlaubt: dcf77, msf, jjy, pl225)\n", p.c_str());
                 return false;
             }
         } else if (arg == "--spectrum") {
@@ -180,6 +200,91 @@ bool parseArgs(int argc, char** argv, Options& opt) {
 
 } // namespace
 
+// ---------------------------------------------------------------------
+// PL225 (e-CzasPL, polnischer 225kHz-Sender) - eigener Signalpfad, da
+// das Verfahren (kontinuierliche Phasenmodulation statt Amplitudentastung)
+// grundlegend anders funktioniert als DCF77/MSF/JJY und daher nicht in die
+// ToneEnvelopeDetector/CarrierDipEvent-Pipeline passt. Siehe
+// pl225_decoder.hpp fuer die ausfuehrliche Begruendung sowie die Erklaerung,
+// warum eine echte PLL/Costas-Loop (statt reiner Huellkurven-AM-Demodulation)
+// noetig ist.
+// ---------------------------------------------------------------------
+int runPl225(const Options& opt) {
+    ConsoleTimeSink sink;
+    sink.verboseBits_ = opt.verboseBits;
+
+    bool useIq = !opt.iqWavFile.empty();
+    bool useMonoWavFile = !useIq && !opt.wavFile.empty();
+
+    if (useIq) {
+        audio::IqWavAudioSource iqSrc(opt.iqWavFile);
+        try {
+            iqSrc.open();
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "IQ-WAV-Datei konnte nicht geoeffnet werden: %s\n", e.what());
+            return 2;
+        }
+        std::printf("PL225-Dekodierung (echtes IQ) gestartet aus Datei '%s', Abtastrate %u Hz, "
+                    "Dauer %.1f s.\n\n",
+                    opt.iqWavFile.c_str(), iqSrc.sampleRate(), iqSrc.durationMs() / 1000.0);
+
+        pl225::Pl225Decoder decoder(sink, iqSrc.sampleRate());
+        unsigned blockSizeSamples = iqSrc.sampleRate() / 10; // 100ms
+        iqSrc.playbackLoop(blockSizeSamples, [&](const std::vector<std::complex<float>>& iq, uint64_t) {
+            decoder.processBlock(iq, 0);
+        });
+    } else {
+        // Mono-Pfad (SSB/USB-Empfang mit BFO, oder direkt als WAV-Datei):
+        // ueber MonoToIqDownconverter (feste NCO bei --tone Hz + Tiefpass)
+        // in einen komplexen Strom umgewandelt, den Rest erledigt die im
+        // Pl225Decoder eingebaute PLL/Costas-Loop (Frequenz-Nachfuehrung).
+        if (useMonoWavFile) {
+            audio::WavAudioSource wavSrc(opt.wavFile);
+            try {
+                wavSrc.open();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "WAV-Datei konnte nicht geoeffnet werden: %s\n", e.what());
+                return 2;
+            }
+            pl225::MonoToIqDownconverter dc(wavSrc.sampleRate(), opt.targetToneHz);
+            pl225::Pl225Decoder decoder(sink, wavSrc.sampleRate());
+            std::printf("PL225-Dekodierung (SSB/Mono, BFO %.1f Hz) gestartet aus Datei '%s', "
+                        "Abtastrate %u Hz, Dauer %.1f s.\n\n",
+                        opt.targetToneHz, opt.wavFile.c_str(), wavSrc.sampleRate(),
+                        wavSrc.durationMs() / 1000.0);
+
+            unsigned blockSizeSamples = wavSrc.sampleRate() / 10;
+            wavSrc.playbackLoop(blockSizeSamples, [&](const std::vector<float>& samples, uint64_t) {
+                auto iq = dc.process(samples);
+                decoder.processBlock(iq, 0);
+            });
+        } else {
+            audio::AlsaAudioSource audioSrc(opt.device, opt.sampleRate, opt.sampleRate / 10);
+            try {
+                audioSrc.open();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "Audiogeraet konnte nicht geoeffnet werden: %s\n", e.what());
+                return 2;
+            }
+            pl225::MonoToIqDownconverter dc(opt.sampleRate, opt.targetToneHz);
+            pl225::Pl225Decoder decoder(sink, opt.sampleRate);
+            std::printf("PL225-Empfang (SSB/Mono, BFO %.1f Hz) gestartet auf Geraet '%s'.\n"
+                        "Empfaenger auf 225 kHz im USB-Modus einstellen, BFO so waehlen, dass\n"
+                        "der Traegerton exakt bei %.1f Hz liegt. Abbruch mit Strg+C.\n\n",
+                        opt.targetToneHz, opt.device.c_str(), opt.targetToneHz);
+
+            audioSrc.captureLoop([&](const std::vector<float>& samples, uint64_t) {
+                auto iq = dc.process(samples);
+                decoder.processBlock(iq, 0);
+                if (g_stopRequested) audioSrc.stop();
+            });
+        }
+    }
+
+    std::printf("\nBeendet.\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     Options opt;
     if (!parseArgs(argc, argv, opt)) {
@@ -188,6 +293,10 @@ int main(int argc, char** argv) {
 
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+
+    if (opt.protocol == Protocol::Pl225) {
+        return runPl225(opt);
+    }
 
     ConsoleTimeSink sink;
     sink.verboseBits_ = opt.verboseBits;
