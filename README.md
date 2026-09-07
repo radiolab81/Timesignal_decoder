@@ -1,9 +1,9 @@
-# DCF77/MSF/JJY/PL225-Empfänger über Soundkarte (Debian 13)
+# DCF77/MSF/JJY/PCSK225-Empfänger über Soundkarte (Debian 13)
 
 ![main](https://github.com/radiolab81/Timesignal_receiver/blob/main/images/timesignal_stations_map.svg)
 
 Empfängt Langwellen-/Mittelwellen-Zeitzeichensender (DCF77 auf 77,5 kHz, MSF
-auf 60 kHz, JJY auf 40/60 kHz, PL225/e-CzasPL auf 225 kHz) indirekt über den
+auf 60 kHz, JJY auf 40/60 kHz, PCSK225/e-CzasPL auf 225 kHz) indirekt über den
 NF-Ausgang eines Kommunikationsempfängers (CW/SSB-Modus) via Soundkarte und
 dekodiert das Telegramm streng nach dem jeweiligen Protokoll (Paritätsprüfung,
 Rahmen-Erkennungsmuster, Reed-Solomon/CRC-Fehlerkorrektur, Plausibilitäts-
@@ -15,7 +15,7 @@ gewählt.
 ## Architektur (modular, für weitere Sender vorbereitet)
 
 DCF77/MSF/JJY sind Amplitudentastungs-Verfahren und teilen sich einen
-gemeinsamen Signalpfad; PL225 ist reine Phasenmodulation und braucht daher
+gemeinsamen Signalpfad; PCSK225 ist reine Phasenmodulation und braucht daher
 einen eigenen, parallelen Pfad (siehe unten).
 
 ```
@@ -65,7 +65,7 @@ Alle Dateien sind einzeln kommentiert:
 | `include/audio_block_callback.hpp` / `iq_block_callback.hpp` | Gemeinsame, abhängigkeitsfreie Callback-Typen |
 | `test/test_msf_synthetic.cpp` | Offline-Test der MSF-Zustandsmaschine mit synthetischem Minutenrahmen |
 | `test/test_jjy_synthetic.cpp` | Offline-Test der JJY-Zustandsmaschine (Normalfall + Morseblock-Sonderfall) |
-| `test/test_pl225_synthetic.cpp` | Offline-Test des PL225-Decoders mit echt RS/CRC-kodiertem Testrahmen |
+| `test/test_pl225_synthetic.cpp` | Offline-Test des PL225-Decoders (PCSK225) mit echt RS/CRC-kodiertem Testrahmen |
 | `test/test_reed_solomon.cpp` | Isolierter Test der eigenen RS(15,9) GF(16)-Implementierung (0-4 Fehler) |
 | `src/main.cpp` | Verdrahtung aller Module, CLI (`--protocol dcf77\|msf\|jjy\|pl225`) |
 
@@ -131,11 +131,11 @@ falls die Karte 48 kHz nicht nativ unterstützt).
 # Aus einer WAV-Datei statt der Soundkarte (z.B. aufgezeichnete Empfangssitzung)
 ./Timesignal_receiver --wav-file aufnahme.wav --tone 500 --protocol jjy
 
-# PL225 (Polen, 225 kHz) - SSB/USB-Empfang mit BFO, Soundkarte oder Mono-WAV
+# PCSK225 (Polen, 225 kHz) - SSB/USB-Empfang mit BFO, Soundkarte oder Mono-WAV
 ./Timesignal_receiver --device plughw:1,0 --tone 1000 --protocol pl225
 ./Timesignal_receiver --wav-file 225khz_ssb.wav --tone 1000 --protocol pl225
 
-# PL225 aus einer echten IQ-Aufnahme (stereo WAV, I=links/Q=rechts)
+# PCSK225 aus einer echten IQ-Aufnahme (stereo WAV, I=links/Q=rechts)
 ./Timesignal_receiver --iq-wav-file 225khz_iq.wav --protocol pl225
 ```
 
@@ -162,7 +162,7 @@ falls die Karte 48 kHz nicht nativ unterstützt).
 
 1. Communication-Receiver auf **77,500 kHz** (DCF77), **60,000 kHz**
    (MSF), **40,000 kHz oder 60,000 kHz** (JJY - beide senden denselben
-   Zeitcode) bzw. **225,000 kHz im USB-Modus** (PL225 - siehe unten,
+   Zeitcode) bzw. **225,000 kHz im USB-Modus** (PCSK225 - siehe unten,
    **nicht** AM-Modus verwenden!), Betriebsart **CW oder SSB**.
 2. `--spectrum` einschalten (nicht bei PL225) und die Feinabstimmung
    (RIT/Clarifier oder VFO) so justieren, dass der Peak im Terminal exakt
@@ -240,7 +240,7 @@ Jede Verletzung führt zum Verwerfen des betroffenen Telegramms samt
 Fehlermeldung auf stderr — es werden nie unvalidierte Zeitwerte
 ausgegeben.
 
-### PL225 (e-CzasPL, Polen)
+### PL225/PCSK225 (e-CzasPL, Polen)
 
 Der `Pl225Decoder` prüft **strikt**:
 
@@ -352,7 +352,7 @@ parallelen Pfad.
   (siehe Kommentar in `jjy_decoder.hpp`/`dayOfYearToMonthDay`). Der
   ST1-ST6-Wartungsankündigungsblock (nur relevant in Minute 15/45) wird
   nicht dekodiert.
-- **PL225:** Schaltsekunden werden nicht durch eigene Kalenderlogik
+- **PL225/PCSK225:** Schaltsekunden werden nicht durch eigene Kalenderlogik
   behandelt (der gesendete Zeitstempel schließt sie laut PA3FWM ohnehin
   aus). Das zweistellige Jahr wird immer als 20xx interpretiert. Der
   `MonoToIqDownconverter` nutzt eine FESTE NCO-Frequenz (`--tone`); liegt
