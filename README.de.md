@@ -1,4 +1,5 @@
 # DCF77/MSF/JJY/PCSK225-Empfänger über Soundkarte (Debian 13)
+🇬🇧 [English](README.md) | 🇩🇪 Deutsch
 
 ![main](https://github.com/radiolab81/Timesignal_receiver/blob/main/images/timesignal_stations_map.svg)
 
